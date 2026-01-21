@@ -4,13 +4,14 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import ta
-import mplfinance as mpf
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 st.set_page_config(layout="wide")
-st.title("AI / Space / Gold Trading Dashboard")
+st.title("แดชบอร์ดเทรดหุ้น AI / อวกาศ / ทองคำ")
 
 # -------------------------------
-# หุ้นตามธีม
+# รายชื่อหุ้น
 # -------------------------------
 tickers = [
     "NDAQ","TSLA","ASML","GOOGL","AVGO","AMZN","AAPL","ORCL",
@@ -21,7 +22,7 @@ tickers = [
 ]
 
 # -------------------------------
-# News Sentiment
+# ข่าว + Sentiment
 # -------------------------------
 def fetch_news_score(keyword):
     url = f"https://news.google.com/rss/search?q={keyword}"
@@ -40,7 +41,7 @@ def fetch_news_score(keyword):
     return score
 
 # -------------------------------
-# Fetch Data
+# ดึงข้อมูลหุ้น
 # -------------------------------
 @st.cache_data(ttl=600)
 def fetch_stock_data(tickers):
@@ -48,15 +49,13 @@ def fetch_stock_data(tickers):
 
     for t in tickers:
         try:
-            stock = yf.Ticker(t)
-            hist = stock.history(period="1y")
+            hist = yf.download(t, period="1y", progress=False)
             if len(hist) < 60:
                 continue
 
             # EMA
             hist["EMA20"] = ta.trend.EMAIndicator(hist["Close"], 20).ema_indicator()
             hist["EMA50"] = ta.trend.EMAIndicator(hist["Close"], 50).ema_indicator()
-            hist["EMA100"] = ta.trend.EMAIndicator(hist["Close"], 100).ema_indicator()
             hist["EMA200"] = ta.trend.EMAIndicator(hist["Close"], 200).ema_indicator()
 
             # RSI
@@ -77,11 +76,12 @@ def fetch_stock_data(tickers):
             avg_vol = hist["Volume"].rolling(20).mean().iloc[-1]
             vol_ratio = hist["Volume"].iloc[-1] / max(avg_vol, 1)
 
-            # Scores
+            # คะแนน
             rsi_score = 15 if rsi < 30 else 10 if rsi < 50 else -10 if rsi > 70 else 5
-            macd_score = 15 if macd_prev < macd_sig_prev and macd_now > macd_sig else -15 if macd_prev > macd_sig_prev and macd_now < macd_sig else 5 if macd_now > macd_sig else 0
+            macd_score = 15 if macd_prev < macd_sig_prev and macd_now > macd_sig else \
+                         -15 if macd_prev > macd_sig_prev and macd_now < macd_sig else \
+                         5 if macd_now > macd_sig else 0
             vol_score = 15 if vol_ratio > 2 else 8 if vol_ratio > 1.5 else 0
-
             news_score = fetch_news_score(t)
 
             total_score = rsi_score + macd_score + vol_score + news_score
@@ -89,9 +89,9 @@ def fetch_stock_data(tickers):
             # Alert
             alert = "—"
             if rsi < 40 and macd_prev < macd_sig_prev and macd_now > macd_sig and vol_ratio > 1.5:
-                alert = "🔥 BUY SIGNAL"
+                alert = "🔥 สัญญาณซื้อ"
             elif rsi > 70 and macd_prev > macd_sig_prev and macd_now < macd_sig:
-                alert = "⚠️ SELL SIGNAL"
+                alert = "⚠️ สัญญาณขาย"
 
             # Confidence %
             confidence = 0
@@ -103,14 +103,13 @@ def fetch_stock_data(tickers):
             confidence = min(confidence, 100)
 
             rows.append({
-                "Ticker": t,
-                "Price": round(hist["Close"].iloc[-1],2),
+                "หุ้น": t,
+                "ราคา": round(hist["Close"].iloc[-1],2),
                 "RSI": round(rsi,1),
                 "MACD": round(macd_now,3),
-                "Volume Spike": round(vol_ratio,2),
-                "Total Score": total_score,
-                "Confidence %": confidence,
-                "Alert": alert,
+                "ปริมาณซื้อขายพุ่ง": round(vol_ratio,2),
+                "ความมั่นใจ (%)": confidence,
+                "สัญญาณเตือน": alert,
                 "History": hist
             })
         except:
@@ -121,7 +120,7 @@ def fetch_stock_data(tickers):
 df = fetch_stock_data(tickers)
 
 # -------------------------------
-# Action
+# คำแนะนำ
 # -------------------------------
 def action(conf):
     if conf >= 80:
@@ -129,48 +128,68 @@ def action(conf):
     elif conf >= 60:
         return "Long ✅"
     elif conf >= 45:
-        return "Speculative ⚡"
+        return "เก็งกำไร ⚡"
     else:
-        return "Hold ⚠️"
+        return "รอดูสถานการณ์ ⚠️"
 
-df["Action"] = df["Confidence %"].apply(action)
+df["คำแนะนำ"] = df["ความมั่นใจ (%)"].apply(action)
 
 # -------------------------------
-# Dashboard
+# ตารางจัดอันดับ
 # -------------------------------
-st.subheader("Stock Ranking")
+st.subheader("📊 จัดอันดับหุ้น")
 st.dataframe(
-    df[["Ticker","Price","RSI","MACD","Volume Spike","Confidence %","Alert","Action"]]
-    .sort_values("Confidence %", ascending=False)
+    df[["หุ้น","ราคา","RSI","MACD","ปริมาณซื้อขายพุ่ง","ความมั่นใจ (%)","สัญญาณเตือน","คำแนะนำ"]]
+    .sort_values("ความมั่นใจ (%)", ascending=False)
 )
 
 # -------------------------------
-# Chart
+# กราฟแท่งเทียน (TradingView style)
 # -------------------------------
-st.subheader("Candlestick + EMA + RSI + MACD")
+st.subheader("📈 กราฟแท่งเทียน (สไตล์ TradingView)")
 
-selected = st.selectbox("Select Stock", df["Ticker"])
-hist = df[df["Ticker"] == selected]["History"].values[0]
+selected = st.selectbox("เลือกหุ้น", df["หุ้น"])
+hist = df[df["หุ้น"] == selected]["History"].values[0]
 
-apds = [
-    mpf.make_addplot(hist["EMA20"]),
-    mpf.make_addplot(hist["EMA50"]),
-    mpf.make_addplot(hist["EMA100"]),
-    mpf.make_addplot(hist["EMA200"]),
-    mpf.make_addplot(hist["RSI"], panel=1, ylabel="RSI"),
-    mpf.make_addplot([70]*len(hist), panel=1, linestyle="--"),
-    mpf.make_addplot([30]*len(hist), panel=1, linestyle="--"),
-    mpf.make_addplot(hist["MACD"], panel=2, ylabel="MACD"),
-    mpf.make_addplot(hist["MACD_signal"], panel=2),
-]
-
-mpf.plot(
-    hist,
-    type="candle",
-    addplot=apds,
-    volume=True,
-    panel_ratios=(3,1,1),
-    style="charles",
-    title=f"{selected} Technical Chart",
-    show_nontrading=False
+fig = make_subplots(
+    rows=3, cols=1,
+    shared_xaxes=True,
+    row_heights=[0.6,0.2,0.2],
+    vertical_spacing=0.02
 )
+
+# Candlestick
+fig.add_trace(
+    go.Candlestick(
+        x=hist.index,
+        open=hist["Open"],
+        high=hist["High"],
+        low=hist["Low"],
+        close=hist["Close"],
+        name="ราคา"
+    ),
+    row=1, col=1
+)
+
+# EMA
+fig.add_trace(go.Scatter(x=hist.index, y=hist["EMA20"], name="EMA20"), row=1, col=1)
+fig.add_trace(go.Scatter(x=hist.index, y=hist["EMA50"], name="EMA50"), row=1, col=1)
+fig.add_trace(go.Scatter(x=hist.index, y=hist["EMA200"], name="EMA200"), row=1, col=1)
+
+# RSI
+fig.add_trace(go.Scatter(x=hist.index, y=hist["RSI"], name="RSI"), row=2, col=1)
+fig.add_hline(y=70, line_dash="dash", row=2, col=1)
+fig.add_hline(y=30, line_dash="dash", row=2, col=1)
+
+# MACD
+fig.add_trace(go.Scatter(x=hist.index, y=hist["MACD"], name="MACD"), row=3, col=1)
+fig.add_trace(go.Scatter(x=hist.index, y=hist["MACD_signal"], name="Signal"), row=3, col=1)
+
+fig.update_layout(
+    template="plotly_dark",
+    height=850,
+    xaxis_rangeslider_visible=False,
+    title=f"{selected} | กราฟเทคนิค (EMA / RSI / MACD)"
+)
+
+st.plotly_chart(fig, use_container_width=True)
