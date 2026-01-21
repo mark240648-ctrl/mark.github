@@ -1,7 +1,7 @@
 streamlit
 yfinance
 pandas
-requests
-beautifulsoup4
+numpy
 ta
-plotly
+mplfinance
+matplotlib
