@@ -148,8 +148,12 @@ st.dataframe(
 # -------------------------------
 st.subheader("📈 กราฟแท่งเทียน (สไตล์ TradingView)")
 
-selected = st.selectbox("เลือกหุ้น", df["หุ้น"])
-hist = df[df["หุ้น"] == selected]["History"].values[0]
+if df.empty:
+    st.stop()
+
+selected = st.selectbox("เลือกหุ้น", df["หุ้น"].tolist())
+hist = df.loc[df["หุ้น"] == selected, "History"].iloc[0]
+
 
 fig = make_subplots(
     rows=3, cols=1,
