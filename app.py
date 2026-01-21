@@ -1,9 +1,8 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
 import ta
-import mplfinance as mpf
+from streamlit.components.v1 import iframe
 
 # ------------------------------
 # CONFIG
@@ -12,16 +11,17 @@ st.set_page_config(layout="wide")
 st.title("แดชบอร์ดเทรดหุ้น AI / อวกาศ / ทองคำ")
 
 # ------------------------------
-# หุ้นที่ติดตาม
+# Tickers (แก้ GOLD → XAUUSD=X)
 # ------------------------------
 TICKERS = [
     "NDAQ", "TSLA", "ASML", "GOOGL", "AVGO", "AMZN",
     "EOSE", "AAPL", "RKLB", "INOD", "IREN",
-    "ORCL", "OKLO", "ONDS", "PL", "GOLD"
+    "ORCL", "ONDS", "PL",
+    "XAUUSD=X"   # ✅ Gold Spot
 ]
 
 # ------------------------------
-# ฟังก์ชันคำนวณ Action
+# Action Logic
 # ------------------------------
 def action(conf):
     if conf >= 70:
@@ -32,31 +32,28 @@ def action(conf):
         return "Hold ⚠️"
 
 # ------------------------------
-# ดึงข้อมูลหุ้น
+# Fetch data (Fallback version)
 # ------------------------------
 @st.cache_data(ttl=600)
 def fetch_data(tickers):
     rows = []
+    failed = []
 
     for t in tickers:
         try:
-            df = yf.download(t, period="6mo", interval="1d", progress=False)
+            df = yf.Ticker(t).history(period="6mo", interval="1d")
 
-            if df.empty or len(df) < 30:
+            if df.empty or len(df) < 20:
+                failed.append(t)
                 continue
 
             close = df["Close"]
             volume = df["Volume"]
 
-            # ===== Indicators =====
             rsi = ta.momentum.RSIIndicator(close).rsi().iloc[-1]
-
-            macd_ind = ta.trend.MACD(close)
-            macd = macd_ind.macd_diff().iloc[-1]
-
+            macd = ta.trend.MACD(close).macd_diff().iloc[-1]
             vol_spike = volume.iloc[-1] / volume.rolling(20).mean().iloc[-1]
 
-            # ===== Confidence =====
             score = 0
             if rsi < 30:
                 score += 30
@@ -81,31 +78,28 @@ def fetch_data(tickers):
                 "RSI": round(rsi, 1),
                 "MACD": round(macd, 3),
                 "Volume Spike": round(vol_spike, 2),
-                "ความมั่นใจ (%)": confidence,
-                "History": df
+                "ความมั่นใจ (%)": confidence
             })
 
         except Exception:
-            continue
+            failed.append(t)
 
-    return pd.DataFrame(rows)
-
-# ------------------------------
-# โหลดข้อมูล
-# ------------------------------
-df = fetch_data(TICKERS)
+    return pd.DataFrame(rows), failed
 
 # ------------------------------
-# Guard ป้องกัน Error
+# Load
 # ------------------------------
+df, failed = fetch_data(TICKERS)
+
 if df.empty:
-    st.error("ไม่สามารถโหลดข้อมูลหุ้นได้")
+    st.error("ไม่สามารถโหลดข้อมูลหุ้นได้ (Yahoo Finance ไม่ตอบสนอง)")
     st.stop()
 
-if "ความมั่นใจ (%)" not in df.columns:
-    st.error("ข้อมูลความมั่นใจไม่ถูกสร้าง")
-    st.write(df.columns)
-    st.stop()
+# ------------------------------
+# Show warning (fallback)
+# ------------------------------
+if failed:
+    st.warning(f"⚠️ โหลดข้อมูลไม่สำเร็จ: {', '.join(failed)}")
 
 # ------------------------------
 # Action
@@ -113,50 +107,46 @@ if "ความมั่นใจ (%)" not in df.columns:
 df["คำแนะนำ"] = df["ความมั่นใจ (%)"].apply(action)
 
 # ------------------------------
-# แสดงตาราง
+# Table
 # ------------------------------
 st.subheader("📊 Stock Ranking")
 
 st.dataframe(
-    df[
-        ["หุ้น", "ราคา", "RSI", "MACD", "Volume Spike", "ความมั่นใจ (%)", "คำแนะนำ"]
-    ].sort_values("ความมั่นใจ (%)", ascending=False),
+    df.sort_values("ความมั่นใจ (%)", ascending=False),
     use_container_width=True
 )
 
 # ------------------------------
-# เลือกหุ้นดูกราฟ
+# TradingView Chart
 # ------------------------------
-st.subheader("📈 Candlestick + RSI + MACD")
+st.subheader("📈 TradingView Candlestick")
 
-selected = st.selectbox("เลือกหุ้น", df["หุ้น"].tolist())
-hist = df.loc[df["หุ้น"] == selected, "History"].iloc[0]
+selected = st.selectbox("เลือกสินทรัพย์", df["หุ้น"].tolist())
 
-# ===== เพิ่ม Indicator ในกราฟ =====
-hist["EMA20"] = ta.trend.EMAIndicator(hist["Close"], 20).ema_indicator()
-hist["EMA50"] = ta.trend.EMAIndicator(hist["Close"], 50).ema_indicator()
-hist["RSI"] = ta.momentum.RSIIndicator(hist["Close"]).rsi()
+tv_symbol = selected.replace("=X", "")  # TradingView format
 
-macd_ind = ta.trend.MACD(hist["Close"])
-hist["MACD"] = macd_ind.macd()
-hist["MACD_signal"] = macd_ind.macd_signal()
+tv_html = f"""
+<!-- TradingView Widget -->
+<div class="tradingview-widget-container">
+  <div id="tv_chart"></div>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script type="text/javascript">
+  new TradingView.widget({{
+    "width": "100%",
+    "height": 600,
+    "symbol": "{tv_symbol}",
+    "interval": "D",
+    "timezone": "Etc/UTC",
+    "theme": "dark",
+    "style": "1",
+    "locale": "en",
+    "toolbar_bg": "#1e222d",
+    "enable_publishing": false,
+    "allow_symbol_change": true,
+    "container_id": "tv_chart"
+  }});
+  </script>
+</div>
+"""
 
-# ===== Plot =====
-apds = [
-    mpf.make_addplot(hist["EMA20"]),
-    mpf.make_addplot(hist["EMA50"]),
-    mpf.make_addplot(hist["RSI"], panel=1, ylabel="RSI"),
-    mpf.make_addplot(hist["MACD"], panel=2, ylabel="MACD"),
-    mpf.make_addplot(hist["MACD_signal"], panel=2),
-]
-
-mpf.plot(
-    hist,
-    type="candle",
-    style="charles",
-    addplot=apds,
-    volume=True,
-    panel_ratios=(3, 1, 1),
-    figsize=(14, 8),
-    show_nontrading=False
-)
+iframe(tv_html, height=620, scrolling=False)
